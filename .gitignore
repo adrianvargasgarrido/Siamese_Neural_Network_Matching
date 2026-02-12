@@ -1,0 +1,27 @@
+# Private Data
+private_config.py
+private_data_generation.py
+synthetic_derivatives_data.csv
+synthetic_derivatives_data.parquet
+
+# Environment Variables
+.env
+.env.local
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.venv/
+env/
+
+# Jupyter Notebooks
+.ipynb_checkpoints/
+
+# macOS
+.DS_Store
+
+# IDEs
+.vscode/
+.idea/
