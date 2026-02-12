@@ -619,3 +619,275 @@ def build_training_episodes_parallel(
         f"{errors} errors, {elapsed:.1f}s"
     )
     return episodes, candidates_long_df
+
+
+# ─── Sequential episode builder (no dependencies) ────────────────────
+
+def build_training_episodes_sequential(
+    df_pool: pd.DataFrame,
+    *,
+    id_col: str,
+    currency_col: str,
+    amount_col: str,
+    date_int_cols: list,
+    columns_to_normalize: list,
+    ref_col=None,
+    n_episodes: int = 2_000,
+    train_k_neg: int = 20,
+    rule_col: str = "Match Rule",
+    window_days: int = 20,
+    amount_tol_pct: float = 0.30,
+    date_policy: str = "any",
+    enforce_same_sign: bool = True,
+    random_state: Optional[int] = None,
+    id_norm_col: str = "Trade Id",
+) -> Tuple[List[Dict[str, Any]], pd.DataFrame]:
+    """
+    Simple sequential episode builder — no multiprocessing, no Spark.
+
+    Uses the same ``_build_one_episode`` worker as the parallel version
+    but runs episodes in a plain for-loop.  Works in any Python
+    environment (local, Databricks, restricted laptops) with zero
+    extra dependencies.
+
+    Returns
+    -------
+    episodes : list[dict]
+    candidates_long_df : pd.DataFrame  with columns [AID, BID, rank, label, rule]
+    """
+    t0 = datetime.now()
+
+    if df_pool is None or df_pool.empty:
+        return [], pd.DataFrame(columns=["AID", "BID", "rank", "label", "rule"])
+
+    rng = np.random.default_rng(seed=random_state)
+    n_sample = min(int(n_episodes), len(df_pool))
+    base = df_pool.sample(
+        n_sample, replace=False,
+        random_state=int(rng.integers(0, 2**32 - 1)),
+    )
+
+    pool_ids_set = set(df_pool[id_norm_col].unique())
+    seeds = rng.integers(0, 2**32 - 1, size=n_sample).tolist()
+    base_rows = [
+        dict(zip(base.columns, vals))
+        for vals in base.itertuples(index=False, name=None)
+    ]
+
+    shared_kwargs = dict(
+        id_col=id_col,
+        currency_col=currency_col,
+        amount_col=amount_col,
+        date_int_cols=date_int_cols,
+        columns_to_normalize=columns_to_normalize,
+        ref_col=ref_col,
+        train_k_neg=train_k_neg,
+        rule_col=rule_col,
+        window_days=window_days,
+        amount_tol_pct=amount_tol_pct,
+        date_policy=date_policy,
+        enforce_same_sign=enforce_same_sign,
+        id_norm_col=id_norm_col,
+    )
+
+    episodes: List[Dict[str, Any]] = []
+    errors = 0
+
+    print(f"Building {n_sample} episodes sequentially …")
+
+    for i, row in enumerate(base_rows):
+        try:
+            ep = _build_one_episode(
+                row, df_pool, pool_ids_set,
+                random_seed=seeds[i], **shared_kwargs,
+            )
+            if ep is not None:
+                episodes.append(ep)
+        except Exception as exc:
+            errors += 1
+            if errors <= 3:
+                print(f"  ⚠ Episode {i} failed: {exc}")
+
+    # Build the long-format diagnostics table
+    long_rows: List[Dict[str, Any]] = []
+    for ep in episodes:
+        for rank, bid in enumerate(ep["candidate_ids"]):
+            long_rows.append({
+                "AID": ep["query_id"],
+                "BID": bid,
+                "rank": rank,
+                "label": 1 if rank == 0 else 0,
+                "rule": ep["rule"],
+            })
+
+    candidates_long_df = pd.DataFrame(
+        long_rows, columns=["AID", "BID", "rank", "label", "rule"]
+    )
+
+    elapsed = (datetime.now() - t0).total_seconds()
+    print(
+        f"✅ Done: {len(episodes)} episodes, "
+        f"{errors} errors, {elapsed:.1f}s"
+    )
+    return episodes, candidates_long_df
+
+
+# ─── Spark episode builder (for Databricks) ──────────────────────────
+
+def build_training_episodes_spark(
+    df_pool: pd.DataFrame,
+    *,
+    id_col: str,
+    currency_col: str,
+    amount_col: str,
+    date_int_cols: list,
+    columns_to_normalize: list,
+    ref_col=None,
+    n_episodes: int = 2_000,
+    train_k_neg: int = 20,
+    rule_col: str = "Match Rule",
+    window_days: int = 20,
+    amount_tol_pct: float = 0.30,
+    date_policy: str = "any",
+    enforce_same_sign: bool = True,
+    random_state: Optional[int] = None,
+    id_norm_col: str = "Trade Id",
+    num_partitions: Optional[int] = None,
+) -> Tuple[List[Dict[str, Any]], pd.DataFrame]:
+    """
+    Spark-distributed episode builder for Databricks.
+
+    Broadcasts the pool DataFrame and maps ``_build_one_episode`` over
+    an RDD of sampled rows.  Falls back to the sequential builder if
+    PySpark is not available.
+
+    Parameters are the same as ``build_training_episodes_sequential``
+    plus ``num_partitions`` (defaults to ``sc.defaultParallelism``).
+
+    Returns
+    -------
+    episodes : list[dict]
+    candidates_long_df : pd.DataFrame  with columns [AID, BID, rank, label, rule]
+    """
+    # Try to import PySpark; fall back to sequential if unavailable
+    try:
+        from pyspark.sql import SparkSession
+        spark = SparkSession.builder.getOrCreate()
+        sc = spark.sparkContext
+    except Exception:
+        print("PySpark not available — falling back to sequential builder.")
+        return build_training_episodes_sequential(
+            df_pool,
+            id_col=id_col,
+            currency_col=currency_col,
+            amount_col=amount_col,
+            date_int_cols=date_int_cols,
+            columns_to_normalize=columns_to_normalize,
+            ref_col=ref_col,
+            n_episodes=n_episodes,
+            train_k_neg=train_k_neg,
+            rule_col=rule_col,
+            window_days=window_days,
+            amount_tol_pct=amount_tol_pct,
+            date_policy=date_policy,
+            enforce_same_sign=enforce_same_sign,
+            random_state=random_state,
+            id_norm_col=id_norm_col,
+        )
+
+    t0 = datetime.now()
+
+    if df_pool is None or df_pool.empty:
+        return [], pd.DataFrame(columns=["AID", "BID", "rank", "label", "rule"])
+
+    rng = np.random.default_rng(seed=random_state)
+    n_sample = min(int(n_episodes), len(df_pool))
+    base = df_pool.sample(
+        n_sample, replace=False,
+        random_state=int(rng.integers(0, 2**32 - 1)),
+    )
+
+    pool_ids_set = set(df_pool[id_norm_col].unique())
+    seeds = rng.integers(0, 2**32 - 1, size=n_sample).tolist()
+    base_rows = [
+        dict(zip(base.columns, vals))
+        for vals in base.itertuples(index=False, name=None)
+    ]
+
+    shared_kwargs = dict(
+        id_col=id_col,
+        currency_col=currency_col,
+        amount_col=amount_col,
+        date_int_cols=date_int_cols,
+        columns_to_normalize=columns_to_normalize,
+        ref_col=ref_col,
+        train_k_neg=train_k_neg,
+        rule_col=rule_col,
+        window_days=window_days,
+        amount_tol_pct=amount_tol_pct,
+        date_policy=date_policy,
+        enforce_same_sign=enforce_same_sign,
+        id_norm_col=id_norm_col,
+    )
+
+    # Broadcast heavy objects so they're sent to workers once
+    bc_pool = sc.broadcast(df_pool)
+    bc_ids = sc.broadcast(pool_ids_set)
+    bc_kwargs = sc.broadcast(shared_kwargs)
+
+    items = list(zip(base_rows, seeds))
+    if num_partitions is None:
+        num_partitions = sc.defaultParallelism
+
+    print(
+        f"Building {n_sample} episodes on Spark "
+        f"({num_partitions} partitions) …"
+    )
+
+    def _worker(item):
+        """Map function executed on each Spark partition."""
+        row, seed = item
+        try:
+            return _build_one_episode(
+                row,
+                bc_pool.value,
+                bc_ids.value,
+                random_seed=seed,
+                **bc_kwargs.value,
+            )
+        except Exception:
+            return None
+
+    rdd = sc.parallelize(items, numSlices=num_partitions)
+    results = rdd.map(_worker).collect()
+
+    # Clean up broadcast variables
+    bc_pool.unpersist()
+    bc_ids.unpersist()
+    bc_kwargs.unpersist()
+
+    episodes = [ep for ep in results if ep is not None]
+    errors = len(results) - len(episodes)
+
+    # Build the long-format diagnostics table
+    long_rows: List[Dict[str, Any]] = []
+    for ep in episodes:
+        for rank, bid in enumerate(ep["candidate_ids"]):
+            long_rows.append({
+                "AID": ep["query_id"],
+                "BID": bid,
+                "rank": rank,
+                "label": 1 if rank == 0 else 0,
+                "rule": ep["rule"],
+            })
+
+    candidates_long_df = pd.DataFrame(
+        long_rows, columns=["AID", "BID", "rank", "label", "rule"]
+    )
+
+    elapsed = (datetime.now() - t0).total_seconds()
+    print(
+        f"✅ Done: {len(episodes)} episodes, "
+        f"{errors} errors, {elapsed:.1f}s"
+    )
+    return episodes, candidates_long_df
