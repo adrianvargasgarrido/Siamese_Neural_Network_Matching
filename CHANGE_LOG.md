@@ -740,3 +740,55 @@ Added comprehensive explanation cells after Cell 21:
 **Critical Insight:**
 Lower accuracy after this fix is a FEATURE, not a bug. The model is now learning real patterns instead of cheating via exact text matching. This is essential for production deployment.
 
+---
+
+## Change #4: Refactor Functions into External Modules
+
+**Date:** February 2026
+
+### Motivation
+All helper functions lived inside the notebook, making it long, hard to navigate, and difficult to reuse or test independently. The refactoring moves every function into dedicated Python modules, keeping only orchestration logic and exploratory cells in the notebook.
+
+### New Module Structure (Professional Standard)
+
+| New Path | Old File | Contents |
+|----------|----------|----------|
+| `src/model/nn_matching/pipeline/data_prep.py` | `preprocessing.py` | Cleaning, normalization, splitting |
+| `src/model/nn_matching/pipeline/candidate_generation.py` | `candidates.py` | Candidate retrieval logic |
+| `src/model/nn_matching/pipeline/vectorization.py` | `features.py` | TF-IDF, scalar features, vectorization |
+| `src/model/nn_matching/models/siamese_network.py` | `model.py` (partial) | Network definition, Dataset class |
+| `src/model/nn_matching/models/losses.py` | `model.py` (partial) | Loss functions, metrics |
+| `src/model/nn_matching/notebooks/siamese_txn_matching.ipynb` | `siamese_neural_net.ipynb` | Orchestration notebook |
+
+### Key Design Decision — Explicit Parameters
+Functions that previously relied on global variables (`ID_COL`, `AMOUNT_COL`, `DATE_COLS`, etc.) now accept them as **explicit keyword arguments**. The notebook passes config via dictionaries:
+
+```python
+_episode_kwargs = dict(
+    id_col=ID_COL, currency_col=CURRENCY_COL,
+    amount_col=AMOUNT_COL, date_int_cols=DATE_INT_COLS,
+    ref_col=REF_COL
+)
+```
+
+This makes the modules self-contained and testable without notebook globals.
+
+### Private Data Extraction
+Sensitive data was moved to gitignored files:
+- `private_config.py` — column lists, example data, match rules
+- `private_data_generation.py` — `generate_synthetic_data()` function
+
+### Notebook Impact
+- **Renamed** to `siamese_txn_matching.ipynb` and moved to `notebooks/` folder
+- **Reduced from 41 → 26 cells** (15 function-definition cells removed)
+- Imports updated to use `src.model.nn_matching...` package structure
+
+### Files Added
+- `preprocessing.py`, `candidates.py`, `features.py`, `model.py` (public, committed)
+- `private_config.py`, `private_data_generation.py` (gitignored)
+
+### Files Modified
+- `siamese_neural_net.ipynb` — removed inline functions, added module imports, updated call sites with explicit parameters
+- `.gitignore` — added private files
+
+
