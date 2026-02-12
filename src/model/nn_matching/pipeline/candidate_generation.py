@@ -1,6 +1,7 @@
 """
 candidate_generation.py — Candidate retrieval, filtering, ranking, and episode construction.
 """
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 from uuid import uuid4
@@ -379,4 +380,242 @@ def build_training_episodes_single_df_debug(
 
     candidates_long_df = pd.DataFrame(long_rows, columns=["AID", "BID", "rank", "label", "rule"])
     print(f"[{_ts()}] done; episodes={len(episodes)}, long_rows={len(long_rows)}")
+    return episodes, candidates_long_df
+
+
+# ─── Single-episode worker (top-level for pickling) ──────────────────
+
+def _build_one_episode(
+    row_b_pos: dict,
+    df_pool: pd.DataFrame,
+    pool_ids_set: set,
+    *,
+    id_col: str,
+    currency_col: str,
+    amount_col: str,
+    date_int_cols: list,
+    columns_to_normalize: list,
+    ref_col,
+    train_k_neg: int,
+    rule_col: str,
+    window_days: int,
+    amount_tol_pct: float,
+    date_policy: str,
+    enforce_same_sign: bool,
+    id_norm_col: str,
+    random_seed: int,
+) -> Optional[Dict[str, Any]]:
+    """Process one episode: create query, retrieve candidates, assemble result."""
+    rng = np.random.default_rng(seed=random_seed)
+    rule_value = row_b_pos.get(rule_col, "UNKNOWN_RULE")
+    true_id = row_b_pos.get(id_col)
+    pool_cols = list(df_pool.columns)
+
+    # Clone positive row to create query with synthetic ID
+    a_row = dict(row_b_pos)
+    a_id = f"Q::{true_id if true_id is not None else 'NA'}::{uuid4().hex}"
+    a_row[id_col] = a_id
+    a_row["combined_text"] = rebuild_combined_text_for_row(
+        pd.Series(a_row), columns_to_normalize
+    )
+
+    # Retrieve hard-negative candidates via blocking
+    neg_cands = get_candidates(
+        query_row=pd.Series(a_row),
+        pool_df=df_pool,
+        id_col=id_col,
+        currency_col=currency_col,
+        amount_col=amount_col,
+        date_int_cols=date_int_cols,
+        ref_col=ref_col,
+        top_k=train_k_neg * 2,
+        window_days=window_days,
+        amount_tol_pct=amount_tol_pct,
+        date_policy=date_policy,
+        enforce_same_sign=enforce_same_sign,
+    )
+
+    # Collect negative IDs, excluding query and positive
+    ex_set = {a_id}
+    if true_id is not None:
+        ex_set.add(true_id)
+
+    neg_ids: List[Any] = []
+    if isinstance(neg_cands, pd.DataFrame) and not neg_cands.empty and "b_id" in neg_cands.columns:
+        seen = set()
+        for bid in neg_cands["b_id"]:
+            if bid in ex_set or bid in seen or bid not in pool_ids_set:
+                continue
+            seen.add(bid)
+            neg_ids.append(bid)
+            if len(neg_ids) >= train_k_neg:
+                break
+
+    # Random top-up if blocking returned fewer than needed
+    if len(neg_ids) < train_k_neg:
+        need = train_k_neg - len(neg_ids)
+        ex_all = set(neg_ids) | ex_set
+        allowed = [tid for tid in pool_ids_set if tid not in ex_all]
+        if allowed:
+            take = min(need, len(allowed))
+            picked = list(rng.choice(allowed, size=take, replace=False))
+            neg_ids.extend(picked)
+
+    # Materialise negative rows
+    if neg_ids:
+        neg_rows = df_pool[df_pool[id_norm_col].isin(neg_ids)].copy()
+        neg_rows["_ord"] = pd.Categorical(
+            neg_rows[id_norm_col], categories=neg_ids, ordered=True
+        )
+        neg_rows = neg_rows.sort_values("_ord").drop(columns="_ord")
+        neg_rows = neg_rows.drop_duplicates(subset=[id_norm_col])
+    else:
+        neg_rows = df_pool.iloc[0:0].copy()
+
+    # Assemble: positive first, then negatives
+    b_pos_df = pd.DataFrame([row_b_pos], columns=pool_cols)
+    candidates_df = pd.concat([b_pos_df, neg_rows], ignore_index=True)
+    candidate_ids = candidates_df[id_col].tolist()
+
+    return {
+        "query_row": pd.Series(a_row),
+        "candidates_df": candidates_df,
+        "positive_index": 0,
+        "rule": rule_value,
+        "query_id": a_id,
+        "candidate_ids": candidate_ids,
+    }
+
+
+# ─── Parallel episode builder ────────────────────────────────────────
+
+def build_training_episodes_parallel(
+    df_pool: pd.DataFrame,
+    *,
+    id_col: str,
+    currency_col: str,
+    amount_col: str,
+    date_int_cols: list,
+    columns_to_normalize: list,
+    ref_col=None,
+    n_episodes: int = 2_000,
+    train_k_neg: int = 20,
+    rule_col: str = "Match Rule",
+    window_days: int = 20,
+    amount_tol_pct: float = 0.30,
+    date_policy: str = "any",
+    enforce_same_sign: bool = True,
+    random_state: Optional[int] = None,
+    id_norm_col: str = "Trade Id",
+    max_workers: Optional[int] = None,
+) -> Tuple[List[Dict[str, Any]], pd.DataFrame]:
+    """
+    Parallel version of episode construction.
+
+    Uses ProcessPoolExecutor to build multiple episodes concurrently.
+    Each worker independently creates a query, retrieves candidates via
+    blocking, and assembles the episode dict.
+
+    Parameters are the same as ``build_training_episodes_single_df_debug``
+    minus the debug/print options.  ``max_workers`` controls concurrency
+    (defaults to cpu_count - 1).
+
+    Returns
+    -------
+    episodes : list[dict]
+    candidates_long_df : pd.DataFrame  with columns [AID, BID, rank, label, rule]
+    """
+    t0 = datetime.now()
+
+    if df_pool is None or df_pool.empty:
+        return [], pd.DataFrame(columns=["AID", "BID", "rank", "label", "rule"])
+
+    rng = np.random.default_rng(seed=random_state)
+    n_sample = min(int(n_episodes), len(df_pool))
+    base = df_pool.sample(
+        n_sample, replace=False,
+        random_state=int(rng.integers(0, 2**32 - 1)),
+    )
+
+    pool_ids_set = set(df_pool[id_norm_col].unique())
+
+    # Pre-generate one seed per episode for reproducibility
+    seeds = rng.integers(0, 2**32 - 1, size=n_sample).tolist()
+
+    # Convert sampled rows to list of dicts (avoids shipping the whole DF index)
+    base_rows = [dict(zip(base.columns, vals)) for vals in base.itertuples(index=False, name=None)]
+
+    shared_kwargs = dict(
+        id_col=id_col,
+        currency_col=currency_col,
+        amount_col=amount_col,
+        date_int_cols=date_int_cols,
+        columns_to_normalize=columns_to_normalize,
+        ref_col=ref_col,
+        train_k_neg=train_k_neg,
+        rule_col=rule_col,
+        window_days=window_days,
+        amount_tol_pct=amount_tol_pct,
+        date_policy=date_policy,
+        enforce_same_sign=enforce_same_sign,
+        id_norm_col=id_norm_col,
+    )
+
+    episodes: List[Dict[str, Any]] = [None] * n_sample  # preserve order
+    errors = 0
+
+    if max_workers is None:
+        import os as _os
+        max_workers = max(1, (_os.cpu_count() or 2) - 1)
+
+    print(
+        f"Building {n_sample} episodes with {max_workers} workers …"
+    )
+
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+        future_to_idx = {
+            executor.submit(
+                _build_one_episode,
+                row,
+                df_pool,
+                pool_ids_set,
+                random_seed=seeds[i],
+                **shared_kwargs,
+            ): i
+            for i, row in enumerate(base_rows)
+        }
+
+        for future in as_completed(future_to_idx):
+            idx = future_to_idx[future]
+            try:
+                episodes[idx] = future.result()
+            except Exception as exc:
+                errors += 1
+                if errors <= 3:
+                    print(f"  ⚠ Episode {idx} failed: {exc}")
+
+    # Drop any failed episodes
+    episodes = [ep for ep in episodes if ep is not None]
+
+    # Build the long-format diagnostics table
+    long_rows: List[Dict[str, Any]] = []
+    for ep in episodes:
+        for rank, bid in enumerate(ep["candidate_ids"]):
+            long_rows.append({
+                "AID": ep["query_id"],
+                "BID": bid,
+                "rank": rank,
+                "label": 1 if rank == 0 else 0,
+                "rule": ep["rule"],
+            })
+
+    candidates_long_df = pd.DataFrame(
+        long_rows, columns=["AID", "BID", "rank", "label", "rule"]
+    )
+
+    elapsed = (datetime.now() - t0).total_seconds()
+    print(
+        f"✅ Done: {len(episodes)} episodes, "
+        f"{errors} errors, {elapsed:.1f}s"
+    )
     return episodes, candidates_long_df
