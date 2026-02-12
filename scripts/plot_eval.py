@@ -7,11 +7,7 @@ Reads metrics produced by the training notebook and saves two plots:
   • docs/visuals/score_hist.png    — Score distribution (positive vs negative)
 
 Usage:
-    python scripts/plot_eval.py                          # uses defaults
-    python scripts/plot_eval.py --metrics results.json   # custom file
-
-If no metrics file is found, the script creates a small synthetic example
-so that the plots are never empty.
+    python scripts/plot_eval.py --metrics metrics/eval_results.json
 """
 from __future__ import annotations
 
