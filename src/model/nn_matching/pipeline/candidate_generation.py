@@ -383,6 +383,14 @@ def build_training_episodes_single_df_debug(
     return episodes, candidates_long_df
 
 
+# ─── Logging helper ──────────────────────────────────────────────────
+
+def _log(msg: str, verbose: bool = True) -> None:
+    """Print message only if verbose is True."""
+    if verbose:
+        print(msg)
+
+
 # ─── Single-episode worker (top-level for pickling) ──────────────────
 
 def _build_one_episode(
@@ -508,6 +516,7 @@ def build_training_episodes_parallel(
     random_state: Optional[int] = None,
     id_norm_col: str = "Trade Id",
     max_workers: Optional[int] = None,
+    verbose: bool = True,
 ) -> Tuple[List[Dict[str, Any]], pd.DataFrame]:
     """
     Parallel version of episode construction.
@@ -568,8 +577,9 @@ def build_training_episodes_parallel(
         import os as _os
         max_workers = max(1, (_os.cpu_count() or 2) - 1)
 
-    print(
-        f"Building {n_sample} episodes with {max_workers} workers …"
+    _log(
+        f"Building {n_sample} episodes with {max_workers} workers …",
+        verbose
     )
 
     with ProcessPoolExecutor(max_workers=max_workers) as executor:
@@ -592,7 +602,7 @@ def build_training_episodes_parallel(
             except Exception as exc:
                 errors += 1
                 if errors <= 3:
-                    print(f"  ⚠ Episode {idx} failed: {exc}")
+                    _log(f"  ⚠ Episode {idx} failed: {exc}", verbose)
 
     # Drop any failed episodes
     episodes = [ep for ep in episodes if ep is not None]
@@ -614,9 +624,10 @@ def build_training_episodes_parallel(
     )
 
     elapsed = (datetime.now() - t0).total_seconds()
-    print(
+    _log(
         f"✅ Done: {len(episodes)} episodes, "
-        f"{errors} errors, {elapsed:.1f}s"
+        f"{errors} errors, {elapsed:.1f}s",
+        verbose
     )
     return episodes, candidates_long_df
 
@@ -641,6 +652,7 @@ def build_training_episodes_sequential(
     enforce_same_sign: bool = True,
     random_state: Optional[int] = None,
     id_norm_col: str = "Trade Id",
+    verbose: bool = True,
 ) -> Tuple[List[Dict[str, Any]], pd.DataFrame]:
     """
     Simple sequential episode builder — no multiprocessing, no Spark.
@@ -693,7 +705,7 @@ def build_training_episodes_sequential(
     episodes: List[Dict[str, Any]] = []
     errors = 0
 
-    print(f"Building {n_sample} episodes sequentially …")
+    _log(f"Building {n_sample} episodes sequentially …", verbose)
 
     for i, row in enumerate(base_rows):
         try:
@@ -706,7 +718,7 @@ def build_training_episodes_sequential(
         except Exception as exc:
             errors += 1
             if errors <= 3:
-                print(f"  ⚠ Episode {i} failed: {exc}")
+                _log(f"  ⚠ Episode {i} failed: {exc}", verbose)
 
     # Build the long-format diagnostics table
     long_rows: List[Dict[str, Any]] = []
@@ -725,9 +737,10 @@ def build_training_episodes_sequential(
     )
 
     elapsed = (datetime.now() - t0).total_seconds()
-    print(
+    _log(
         f"✅ Done: {len(episodes)} episodes, "
-        f"{errors} errors, {elapsed:.1f}s"
+        f"{errors} errors, {elapsed:.1f}s",
+        verbose
     )
     return episodes, candidates_long_df
 
@@ -753,6 +766,7 @@ def build_training_episodes_spark(
     random_state: Optional[int] = None,
     id_norm_col: str = "Trade Id",
     num_partitions: Optional[int] = None,
+    verbose: bool = True,
 ) -> Tuple[List[Dict[str, Any]], pd.DataFrame]:
     """
     Spark-distributed episode builder for Databricks.
@@ -775,7 +789,7 @@ def build_training_episodes_spark(
         spark = SparkSession.builder.getOrCreate()
         sc = spark.sparkContext
     except Exception:
-        print("PySpark not available — falling back to sequential builder.")
+        _log("PySpark not available — falling back to sequential builder.", verbose)
         return build_training_episodes_sequential(
             df_pool,
             id_col=id_col,
@@ -793,6 +807,7 @@ def build_training_episodes_spark(
             enforce_same_sign=enforce_same_sign,
             random_state=random_state,
             id_norm_col=id_norm_col,
+            verbose=verbose,
         )
 
     t0 = datetime.now()
@@ -839,9 +854,10 @@ def build_training_episodes_spark(
     if num_partitions is None:
         num_partitions = sc.defaultParallelism
 
-    print(
+    _log(
         f"Building {n_sample} episodes on Spark "
-        f"({num_partitions} partitions) …"
+        f"({num_partitions} partitions) …",
+        verbose
     )
 
     def _worker(item):
@@ -886,8 +902,9 @@ def build_training_episodes_spark(
     )
 
     elapsed = (datetime.now() - t0).total_seconds()
-    print(
+    _log(
         f"✅ Done: {len(episodes)} episodes, "
-        f"{errors} errors, {elapsed:.1f}s"
+        f"{errors} errors, {elapsed:.1f}s",
+        verbose
     )
     return episodes, candidates_long_df
