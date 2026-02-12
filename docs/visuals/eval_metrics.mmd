@@ -1,0 +1,48 @@
+%% Evaluation Metrics — Computation Flow
+%% Shows how raw model logits become ranking and threshold metrics
+
+flowchart LR
+    subgraph RAW ["Model Output"]
+        L["Logits per episode<br/><i>shape: (K,) per query</i>"]
+    end
+
+    subgraph RANKING ["Ranking Metrics"]
+        direction TB
+        SORT["argsort(logits, desc)"]
+        PAT1["P@1<br/><i>is rank of positive = 0?</i>"]
+        RATK["Recall@K<br/><i>positive in top-K?</i>"]
+        MRR["MRR<br/><i>1 / (rank + 1)</i>"]
+        NDCG["nDCG<br/><i>discounted gain</i>"]
+        SORT --> PAT1
+        SORT --> RATK
+        SORT --> MRR
+        SORT --> NDCG
+    end
+
+    subgraph THRESHOLD ["Threshold Metrics<br/><i>choose score cut-off τ</i>"]
+        direction TB
+        SIG["σ(logit) → score ∈ [0,1]"]
+        CM["Confusion Matrix<br/><i>TP / FP / FN / TN</i>"]
+        PR["Precision · Recall · F1"]
+        AUC["PR-AUC · ROC-AUC"]
+        SIG --> CM --> PR
+        SIG --> AUC
+    end
+
+    subgraph BIZ ["Business / Operational"]
+        direction TB
+        COV["Coverage<br/><i>% queries with ≥1 candidate</i>"]
+        WL["Review Workload<br/><i>avg candidates / query</i>"]
+        TTM["Time-to-Match<br/><i>latency per query</i>"]
+    end
+
+    L --> SORT
+    L --> SIG
+    L --> COV
+    L --> WL
+    L --> TTM
+
+    style RAW fill:#e8eaf6,stroke:#283593
+    style RANKING fill:#e8f5e9,stroke:#1B5E20
+    style THRESHOLD fill:#fff3e0,stroke:#E65100
+    style BIZ fill:#fce4ec,stroke:#880E4F

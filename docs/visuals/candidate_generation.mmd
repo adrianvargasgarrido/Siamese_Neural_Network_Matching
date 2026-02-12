@@ -1,0 +1,43 @@
+%% Candidate Generation — Blocking + Top-K Ranking
+%% Shows how the candidate pool is narrowed for each query trade
+
+flowchart TD
+    Q["🔍 Query Trade<br/><i>Currency: GBP<br/>Amount: 1,000,000<br/>Date: 2026-01-15</i>"]
+
+    subgraph BLOCKING ["Stage 1 · Blocking Filters"]
+        direction TB
+        BF1["Currency Match<br/><i>same currency only</i>"]
+        BF2["Date Window<br/><i>|date_q − date_c| ≤ 20 days</i>"]
+        BF3["Amount Tolerance<br/><i>|amt_q − amt_c| / |amt_q| ≤ 30%</i>"]
+        BF1 --> BF2 --> BF3
+    end
+
+    subgraph RANK ["Stage 2 · Ranking &amp; Top-K"]
+        direction TB
+        R1["Sort by:<br/>1. ref_exact ↓<br/>2. amount_diff ↑<br/>3. date_diff ↑"]
+        R2["De-duplicate<br/><i>by Trade Id</i>"]
+        R3["Take Top-K<br/><i>K = 50</i>"]
+        R1 --> R2 --> R3
+    end
+
+    subgraph OUTPUT ["Candidate List"]
+        direction TB
+        O1["✅ Candidate 1 — <i>closest amount + date</i>"]
+        O2["　 Candidate 2"]
+        O3["　 Candidate 3"]
+        O4["　 ···"]
+        OK["　 Candidate K"]
+    end
+
+    Q --> BLOCKING
+    BLOCKING --> RANK
+    RANK --> OUTPUT
+
+    POOL["Full Trade Pool<br/><i>N trades</i>"] -.->|"~N candidates<br/>before blocking"| BF1
+    BF3 -.->|"≪ N candidates<br/>after blocking"| R1
+
+    style Q fill:#fff3e0,stroke:#E65100,stroke-width:2px
+    style BLOCKING fill:#e3f2fd,stroke:#1565C0
+    style RANK fill:#f3e5f5,stroke:#6A1B9A
+    style OUTPUT fill:#e8f5e9,stroke:#2E7D32
+    style POOL fill:#fafafa,stroke:#9E9E9E,stroke-dasharray: 5

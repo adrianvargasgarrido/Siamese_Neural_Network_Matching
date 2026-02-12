@@ -1,0 +1,56 @@
+%% Pipeline Overview — End-to-End Trade Matching
+%% Render with any Mermaid-compatible viewer (GitHub, VS Code extension, etc.)
+
+flowchart LR
+    subgraph DATA ["1 · Data Ingestion"]
+        A1[Raw Trades<br/><i>parquet / CSV</i>]
+        A2[Filter &amp; Clean<br/><i>valid Match IDs,<br/>allowed rules</i>]
+        A3[1-to-1 Pairs<br/><i>group size = 2</i>]
+        A1 --> A2 --> A3
+    end
+
+    subgraph PREP ["2 · Feature Engineering"]
+        B1[Normalize Text<br/><i>combined_text</i>]
+        B2[Date → int cols]
+        B3[Train / Val / Test<br/><i>stratified group split</i>]
+        A3 --> B1 --> B2 --> B3
+    end
+
+    subgraph CAND ["3 · Candidate Generation"]
+        C1[Block by Currency]
+        C2[Date Window<br/><i>±20 days</i>]
+        C3[Amount Tolerance<br/><i>±30 %</i>]
+        C4[Rank &amp; Top-K]
+        B3 --> C1 --> C2 --> C3 --> C4
+    end
+
+    subgraph EPISODES ["4 · Episode Construction"]
+        D1[Clone positive →<br/>synthetic query]
+        D2[Rebuild query<br/>combined_text]
+        D3[Attach K negatives<br/><i>from candidate pool</i>]
+        C4 --> D1 --> D2 --> D3
+    end
+
+    subgraph MODEL ["5 · Siamese Ranking"]
+        E1[TF-IDF char n-grams<br/><i>fit on train only</i>]
+        E2[Shared Encoder<br/><i>text_fc + scalar_fc</i>]
+        E3[Comparison Head<br/><i>|u−v|, u⊙v, pair feats</i>]
+        E4[Listwise CE Loss<br/><i>softmax over K cands</i>]
+        D3 --> E1 --> E2 --> E3 --> E4
+    end
+
+    subgraph EVAL ["6 · Evaluation"]
+        F1[P@1 / MRR]
+        F2[Score Distribution]
+        F3[Early Stopping<br/><i>patience = 3</i>]
+        E4 --> F1
+        E4 --> F2
+        F1 --> F3
+    end
+
+    style DATA fill:#e8f4f8,stroke:#2196F3
+    style PREP fill:#e8f8e8,stroke:#4CAF50
+    style CAND fill:#fff8e1,stroke:#FF9800
+    style EPISODES fill:#fce4ec,stroke:#E91E63
+    style MODEL fill:#ede7f6,stroke:#673AB7
+    style EVAL fill:#e0f2f1,stroke:#009688

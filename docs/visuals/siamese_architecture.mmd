@@ -1,0 +1,58 @@
+%% Siamese Matching Network — Architecture Detail
+%% Shared encoder encodes query and each candidate; comparison head scores the pair
+
+flowchart TB
+    subgraph INPUT_Q ["Query Input"]
+        TQ["combined_text<br/><i>TF-IDF char 2-4 grams</i><br/>shape: (V,)"]
+        SQ["Scalars<br/><i>log1p|amount|, date_norm</i><br/>shape: (2,)"]
+    end
+
+    subgraph INPUT_C ["Candidate Input"]
+        TC["combined_text<br/><i>TF-IDF char 2-4 grams</i><br/>shape: (V,)"]
+        SC["Scalars<br/><i>log1p|amount|, date_norm</i><br/>shape: (2,)"]
+    end
+
+    subgraph ENCODER ["Shared Encoder  (weights tied)"]
+        direction TB
+        TFC["text_fc · Linear(V → 32) + ReLU"]
+        SFC["scalar_fc · Linear(2 → 8) + ReLU"]
+        MIX["encode_mix · Linear(40 → 32) + ReLU"]
+        TFC --> MIX
+        SFC --> MIX
+    end
+
+    TQ --> TFC
+    SQ --> SFC
+    TC --> TFC
+    SC --> SFC
+
+    MIX -->|"u  (32-d)"| COMP
+    MIX -->|"v  (32-d)"| COMP
+
+    subgraph COMP ["Comparison Head"]
+        direction TB
+        DIFF["|u − v|  element-wise diff"]
+        PROD["u ⊙ v  element-wise product"]
+        PF["Pair Features<br/><i>log_amt_diff, log_date_diff, ref_exact</i><br/>shape: (3,)"]
+        CAT["Concat → (32+32+3 = 67)"]
+        CLS["Linear(67→16) + ReLU + Dropout(0.2)<br/>Linear(16→1)"]
+        DIFF --> CAT
+        PROD --> CAT
+        PF --> CAT
+        CAT --> CLS
+    end
+
+    CLS -->|"logit"| LOSS
+
+    subgraph LOSS ["Loss &amp; Ranking"]
+        direction LR
+        LCE["Listwise Cross-Entropy<br/><i>softmax over K candidate logits</i>"]
+        MET["Metrics: P@1 · MRR"]
+        LCE --> MET
+    end
+
+    style INPUT_Q fill:#fff8e1,stroke:#F57F17
+    style INPUT_C fill:#fff8e1,stroke:#F57F17
+    style ENCODER fill:#e8eaf6,stroke:#283593,stroke-width:2px
+    style COMP fill:#fce4ec,stroke:#880E4F
+    style LOSS fill:#e0f2f1,stroke:#00695C
