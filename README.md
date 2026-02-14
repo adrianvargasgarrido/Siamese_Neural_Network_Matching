@@ -10,12 +10,13 @@ A learning-to-rank pipeline that uses a Siamese neural network to match financia
 2. **Text normalisation** — lowercase, strip, and combine identifier columns (Trade Id, ISIN, CUSIP, SEDOL, etc.) into a single `combined_text` field.
 3. **Stratified group split** — divide data into train / val / test by Match ID groups so no matched pair leaks across splits.
 4. **Episode construction** — for each training example, clone a matched trade as the query (with a synthetic ID), keep the original as the positive, and retrieve hard negatives via blocking (currency, date window, amount tolerance).
-5. **TF-IDF vectorisation** — fit character n-gram (2–4) TF-IDF on training episodes only.
-6. **Feature assembly** — each query–candidate pair gets: TF-IDF text vectors, scalar features (log-amount, date norm), and pairwise features (amount diff, date diff, reference match).
-7. **Siamese network** — shared encoder (text → 32-d, scalars → 8-d, fused → 32-d) produces embeddings; comparison head combines |u−v|, u⊙v, and pair features to output a logit per candidate.
-8. **Listwise cross-entropy loss** — softmax over candidate logits pushes the positive to rank 1.
-9. **Early stopping** — training halts when validation loss stops improving; best model is restored.
-10. **Evaluation** — P@1, MRR on the held-out test set.
+5. **Data augmentation** — apply on-the-fly noise (typos, token swaps, date shifts) to query trades during training to improve robustness.
+6. **TF-IDF vectorisation** — fit character n-gram (2–4) TF-IDF on training episodes only.
+7. **Feature assembly** — each query–candidate pair gets: TF-IDF text vectors, scalar features (log-amount, date norm), and pairwise features (amount diff, date diff, reference match).
+8. **Siamese network** — shared encoder (text → 32-d, scalars → 8-d, fused → 32-d) produces embeddings; comparison head combines |u−v|, u⊙v, and pair features to output a logit per candidate.
+9. **Listwise cross-entropy loss** — softmax over candidate logits pushes the positive to rank 1.
+10. **Early stopping** — training halts when validation loss stops improving; best model is restored.
+11. **Evaluation** — P@1, MRR on the held-out test set.
 
 ---
 
@@ -31,7 +32,8 @@ A learning-to-rank pipeline that uses a Siamese neural network to match financia
 │   ├── pipeline/
 │   │   ├── data_prep.py               ← Normalisation, date handling, group splitting
 │   │   ├── candidate_generation.py    ← Blocking, retrieval, episode builders
-│   │   └── vectorization.py          ← TF-IDF iteration, scalar/pair features
+│   │   ├── vectorization.py           ← TF-IDF iteration, scalar/pair features
+│   │   └── augmentation.py            ← Query noise simulation (typos, swaps, etc.)
 │   ├── models/
 │   │   ├── siamese_network.py         ← SiameseMatchingNet, Dataset, collation
 │   │   └── losses.py                  ← Listwise CE loss, P@1 / MRR metrics
@@ -41,8 +43,12 @@ A learning-to-rank pipeline that uses a Siamese neural network to match financia
 │   ├── configs/                       ← (reserved for config files)
 │   └── utils/
 │
-├── docs/visuals/
-│   ├── README.md                      ← Visual documentation (Mermaid diagrams)
+├── docs/
+│   ├── DATA_AUGMENTATION_GUIDE.md     ← Guide to noise simulation techniques
+│   ├── IMPORT_PATTERNS.md
+│   ├── NOTEBOOK_WALKTHROUGH.md
+│   └── visuals/
+│       ├── README.md                  ← Visual documentation (Mermaid diagrams)
 │   ├── pipeline_overview.mmd
 │   ├── candidate_generation.mmd
 │   ├── siamese_architecture.mmd
@@ -67,6 +73,22 @@ The episode construction step has three interchangeable builders. All produce id
 | `build_training_episodes_spark` | Spark RDD + broadcast variables | Databricks clusters |
 
 The notebook auto-detects the environment (`DATABRICKS_RUNTIME_VERSION`) and picks the appropriate builder.
+
+---
+
+## Data Augmentation
+
+To improve model robustness, the pipeline supports online data augmentation during training. This simulates real-world errors by perturbing the *Query* side of the match.
+
+Techniques implemented in `pipeline/augmentation.py`:
+- **Token Dropout**: Randomly removing words (simulating data loss).
+- **Token Swap**: Swapping adjacent words (simulating entry errors).
+- **Character Noise**: Keyboard typos (qwerty adjacency) or random insertions/deletions.
+- **Synonym Substitution**: Replacing words with domain equivalents (e.g., "CORP" -> "CORPORATION").
+- **Field Omission**: Dropping entire fields from the combined text string.
+- **Scalar Perturbation**: Jittering numeric amounts and shifting dates slightly.
+
+Configuration for these can be found in the notebook's `AUGMENT_PARAMS` dictionary.
 
 ---
 

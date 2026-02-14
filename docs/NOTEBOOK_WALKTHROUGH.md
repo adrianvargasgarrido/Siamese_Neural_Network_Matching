@@ -6,97 +6,166 @@ A step-by-step technical explanation of the `siamese_txn_matching.ipynb` noteboo
 
 ## Pipeline Diagram
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                    SIAMESE TRADE MATCHING PIPELINE                  │
-└─────────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TD
+    subgraph S1 [Step 1: Setup]
+        A[Env & Imports] --> B[Configuration]
+    end
 
-  ┌──────────┐     ┌──────────────┐     ┌──────────────────┐
-  │  Step 1  │────▶│    Step 2     │────▶│     Step 3       │
-  │ Env &    │     │ Configuration│     │ Data Loading &   │
-  │ Imports  │     │ (columns,    │     │ Cleaning         │
-  │          │     │  thresholds) │     │ (filter, 1-to-1) │
-  └──────────┘     └──────────────┘     └────────┬─────────┘
-                                                  │
-                                                  ▼
-                                        ┌──────────────────┐
-                                        │     Step 4       │
-                                        │ Train/Val/Test   │
-                                        │ Split (by group) │
-                                        └────────┬─────────┘
-                                                  │
-          ┌───────────────────────────────────────┘
-          ▼
-  ┌──────────────────┐     ┌──────────────────┐     ┌──────────────────┐
-  │     Step 5       │────▶│     Step 6       │────▶│     Step 7       │
-  │ Episode          │     │ TF-IDF           │     │ Model Init       │
-  │ Construction     │     │ Vectorisation    │     │ (Siamese net,    │
-  │ (query, pos,     │     │ (char n-grams,   │     │  datasets,       │
-  │  hard negatives) │     │  sparse vectors) │     │  data loaders)   │
-  └──────────────────┘     └──────────────────┘     └────────┬─────────┘
-                                                              │
-                                                              ▼
-                                                    ┌──────────────────┐
-                                                    │     Step 8       │
-                                                    │ Training Loop    │
-                                                    │ (listwise CE,    │
-                                                    │  early stopping) │
-                                                    └────────┬─────────┘
-                                                              │
-                                                              ▼
-                                                    ┌──────────────────┐
-                                                    │     Step 9       │
-                                                    │ Evaluation &     │
-                                                    │ Analysis         │
-                                                    │ (metrics, plots) │
-                                                    └──────────────────┘
+    subgraph S2 [Step 2: Data Loading]
+        B --> C[Load Data]
+        C --> D[Clean & Validate]
+    end
+
+    subgraph S3 [Step 3: Preprocessing]
+        D --> E[Normalize Text]
+        E --> F[Stratified Split]
+    end
+
+    subgraph S4 [Step 4: Episode Construction]
+        F --> G[Build Episodes]
+        G --> H[Blocking & Negative Mining]
+    end
+    
+    subgraph S5 [Step 5: Data Augmentation]
+        H --> I[Config Augmentation Params]
+        I --> J[Visualize Noise (Demo Cell)]
+    end
+
+    subgraph S6 [Step 6: Vectorization]
+        H --> K[Fit TF-IDF]
+        J --> K
+        K --> L[Feature Assembly]
+    end
+
+    subgraph S7 [Step 7: Model & Training]
+        L --> M[Init Siamese Net]
+        M --> N[Training Loop]
+        N --> O[Evaluation Metrics]
+    end
 ```
 
-### Data Flow Through the Model (Single Episode)
+### Data Flow Including Augmentation
 
+```mermaid
+flowchart LR
+    Q[Query Trade] --> A{Augmentation?}
+    A --Yes--> B(Apply Noise: Typos, Swaps, Drops)
+    A --No--> C(Original Query)
+    B --> D[Text Vectorization]
+    C --> D
+    
+    P[Positive Match] --> E[Text Vectorization]
+    N[Negative Candidates] --> E
+    
+    D & E --> F[Shared Encoder]
+    F --> G[Comparison Combinator]
+    G --> H[Ranking Loss]
 ```
-  Trade B (positive)                       Pool trades
-       │                                    │ │ │
-       │  clone + synthetic ID              │ │ │  blocking
-       ▼                                    ▼ ▼ ▼  (currency, date, amount)
-  ┌─────────┐                        ┌───────────────────┐
-  │ Query A │                        │ Candidates        │
-  │ (synth  │                        │ [B_pos, neg₁, neg₂│
-  │  ID)    │                        │  neg₃, …, negₖ]  │
-  └────┬────┘                        └───────┬───────────┘
-       │                                     │
-       │         TF-IDF vectorize            │
-       ▼                                     ▼
-  ┌─────────┐                        ┌───────────────────┐
-  │ t_a     │                        │ t_b (for each)    │
-  │ s_a     │                        │ s_b (for each)    │
-  └────┬────┘                        └───────┬───────────┘
-       │                                     │
-       │      Shared Siamese Encoder         │
-       ▼                                     ▼
-  ┌─────────┐                        ┌───────────────────┐
-  │ u (32d) │                        │ v₁, v₂, …, vₖ    │
-  └────┬────┘                        └───────┬───────────┘
-       │                                     │
-       └──────────┬──────────────────────────┘
-                  │
-                  ▼  Comparison head (for each pair)
-          ┌───────────────┐
-          │  |u - vⱼ|     │
-          │  u ⊙ vⱼ       │  ──▶  logit per candidate
-          │  pair_feats   │
-          └───────────────┘
-                  │
-                  ▼  Softmax over all K logits
-          ┌───────────────┐
-          │ Listwise CE   │  ──▶  Push positive to rank 1
-          │ Loss          │
-          └───────────────┘
-```
-
----
 
 ## Step 1 — Environment & Imports
+
+Detect whether we're running locally or in Databricks, set up `sys.path` so Python can find our project modules, then import all pipeline components.
+
+**Key Libraries:**
+- `pandas`, `numpy`: specific data manipulation
+- `torch`: PyTorch for the Neural Network
+- `sklearn`: `TfidfVectorizer` for text features
+- `model.nn_matching`: Our custom package containing the core logic (`pipeline`, `models`)
+
+## Step 2 — Configuration
+
+Define the column names that map to your dataset and the thresholds for candidate retrieval (blocking). These control how hard-negatives are selected during episode construction.
+
+**Key Configs:**
+- `WINDOW_DAYS`: Max date difference (e.g., ±5 days)
+- `AMOUNT_TOL_PCT`: Max amount difference (e.g., ±30%)
+- `TRAIN_K_NEG`: Number of hard negatives to mine per query during training (e.g., 30)
+- `AUGMENT_TRAIN`: Boolean to enable/disable the new data augmentation pipeline
+
+## Step 3 — Data Loading & Cleaning
+
+Load the raw trade data and filter it to ensure we have valid ground truth for supervised learning.
+
+**What happens here:**
+1.  **Load CSV**: Reads `synthetic_derivatives_data.csv`.
+2.  **Filter**: Keeps only rows where `Match Status == "Matched"`.
+3.  **Validate**: Ensures every match group has exactly 2 trades (1-to-1 matching).
+4.  **Date Parsing**: Converts strings to datetime objects.
+
+## Step 4 — Preprocessing & Splitting
+
+Prepare the text data and split the dataset without leakage.
+
+1.  **Normalization**: Lowercases text, removes punctuation, and combines relevant columns (`Trade Id`, `ISIN`, `CUSIP`, etc.) into a single `combined_text` field.
+2.  **Stratified Split**: Splits data into Train (60%), Validation (20%), and Test (20%) sets based on `Match Id`.
+    *   *Why?* We cannot have one half of a pair in Train and the other in Test. Splits must respect the match groups.
+
+## Step 5 — Episode Construction
+
+Convert the raw list of trades into "Episodes" for ranking.
+
+**What is an Episode?**
+-   **Query**: A synthetic version of one trade in a match.
+-   **Positive**: The actual matching counterpart.
+-   **Negatives**: 30+ other trades that look similar (hard negatives) based on blocking rules (date/currency/amount).
+
+**Builders:**
+The notebook attempts to use parallel processing (`build_training_episodes_parallel`) to speed this up, as it involves many dataframe lookups.
+
+## Step 5b — Data Augmentation Visualization (New!)
+
+This cell demonstrates the robustness features added to the pipeline. It picks a sample query and applies random noise to it.
+
+**Techniques Visible:**
+-   **Token Dropout**: "BUY 1000 IBM" -> "BUY IBM"
+-   **Token Swap**: "BUY 1000" -> "1000 BUY"
+-   **Character Noise**: "APPLE" -> "APPKL" (typo)
+-   **Scalar Noise**: Amounts slightly jittered by <1%.
+
+## Step 6 — Vectorization
+
+Transform text into numbers the neural network can understand.
+
+1.  **Fit TF-IDF**: Learns a vocabulary of character n-grams (2-4 chars) from the *Training* episodes only.
+    *   *Note*: Validation/Test data is transformed using this frozen vocabulary.
+2.  **Vectorize**: Converts every query and candidate text into a sparse vector.
+3.  **Scalar Features**: Computes log-amount, normalized dates, and pair features (amount difference, date difference).
+
+## Step 7 — Model Initialization
+
+Instantiate the PyTorch model and the DataLoaders.
+
+**Components:**
+-   **SiameseMatchingNet**: The neural network architecture.
+    -   *Text Encoder*: Linear layer (vocab_size -> 32 dims).
+    -   *Scalar Encoder*: Linear layer (scalar_dim -> 8 dims).
+    -   *Comparator*: Combines `|u-v|` and `u*v` matches.
+-   **RankingEpisodeDataset**: A custom PyTorch Dataset that handles the on-the-fly augmentation and batching.
+    -   *Input*: List of Episodes.
+    -   *Output*: Tensors ready for the GPU/CPU.
+
+## Step 8 — Training Loop
+
+The core learning process.
+
+**Key Mechanics:**
+-   **Loss Function**: `listwise_ce_from_groups` (Listwise Cross-Entropy). It treats the ranking problem as a classification problem over the list of candidates.
+-   **Optimizer**: AdamW.
+-   **Early Stopping**: Monitors Validation P@1 (Precision at Rank 1). If it doesn't improve for `patience` epochs, training stops to prevent overfitting.
+-   **Augmentation**: Active only during this phase (`augment=True`).
+
+## Step 9 — Evaluation
+
+Measure final performance on the held-out Test set.
+
+**Metrics:**
+-   **P@1 (Precision at 1)**: How often is the correct match ranked #1?
+-   **MRR (Mean Reciprocal Rank)**: Average of (1 / rank_of_correct_match).
+-   **Error Analysis**: The notebook prints out "Hard Failures" where the model ranked a negative above the positive, helping identify patterns like missing data or extreme date mismatches.
+
+---
+**End.** This concludes the walkthrough of the notebook structure.
 
 **What:** Detects runtime (Local vs Databricks), configures `sys.path`, imports all pipeline modules.
 

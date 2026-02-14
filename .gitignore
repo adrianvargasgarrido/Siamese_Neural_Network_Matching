@@ -3,6 +3,8 @@ private_config.py
 private_data_generation.py
 synthetic_derivatives_data.csv
 synthetic_derivatives_data.parquet
+CHANGE_LOG.md
+
 
 # Environment Variables
 .env
@@ -25,3 +27,5 @@ env/
 # IDEs
 .vscode/
 .idea/
+
+
