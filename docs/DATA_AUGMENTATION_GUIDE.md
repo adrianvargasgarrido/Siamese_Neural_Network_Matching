@@ -367,13 +367,19 @@ Monitor validation MRR and Recall@K:
 
 ## Implementation Checklist
 
-- [ ] Add `augment_query()` function to `data_prep.py` or new `augmentation.py`
-- [ ] Add `_apply_char_noise()` helper function
-- [ ] Update `RankingEpisodeDataset.__init__` with `augment` and `augment_params`
-- [ ] Modify `RankingEpisodeDataset.__getitem__` to call `augment_query`
-- [ ] Add `columns_to_normalize` to Dataset constructor
-- [ ] Create training dataset with `augment=True`
-- [ ] Create validation/test datasets with `augment=False`
+- [x] Add `augment_query()` function to `pipeline/augmentation.py`
+- [x] Add `_apply_char_noise()` helper function
+- [x] Add `token_dropout()`, `token_swap()`, `char_noise()`, `synonym_substitution()` text perturbations
+- [x] Add `field_omission()` field-level perturbation
+- [x] Add `scalar_perturbation()` for amount/date noise
+- [x] Update `RankingEpisodeDataset.__init__` with `augment`, `augment_params`, `columns_to_normalize`
+- [x] Modify `RankingEpisodeDataset.__getitem__` to call `augment_query`
+- [x] Add `columns_to_normalize` to Dataset constructor
+- [x] Export all augmentation functions from `pipeline/__init__.py`
+- [x] Add `AUGMENT_TRAIN` and `AUGMENT_PARAMS` config to notebook Step 2
+- [x] Create training dataset with `augment=True` in training loop
+- [x] Create validation/test datasets with `augment=False`
+- [x] Add augmentation demo cell (Step 5b) with before/after visual
 - [ ] Tune hyperparameters by monitoring val vs train performance
 - [ ] Document final augmentation settings in training config
 

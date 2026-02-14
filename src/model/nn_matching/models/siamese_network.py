@@ -7,6 +7,7 @@ import torch.nn as nn
 from torch.utils.data import Dataset
 
 from ..pipeline.vectorization import vectorize_episode
+from ..pipeline.augmentation import augment_query
 
 
 # ─── Network ─────────────────────────────────────────────────────────
@@ -52,14 +53,62 @@ class SiameseMatchingNet(nn.Module):
 # ─── Dataset & Collation ─────────────────────────────────────────────
 
 class RankingEpisodeDataset(Dataset):
-    """Episode-based dataset for listwise training."""
+    """
+    Episode-based dataset for listwise training.
 
-    def __init__(self, episodes, vectorizer, amount_col, date_cols, ref_col=None):
+    Supports optional data augmentation on the query side.
+    When `augment=True`, the query row is perturbed BEFORE vectorization
+    so TF-IDF and scalar features naturally reflect the noise.
+    Augmentation is applied in __getitem__, meaning every epoch sees a
+    DIFFERENT perturbation of the same episode (Option B architecture).
+
+    Parameters
+    ----------
+    episodes : list[dict]
+        Pre-built episodes from the candidate generation pipeline.
+    vectorizer : TfidfVectorizer
+        Fitted TF-IDF vectorizer.
+    amount_col : str
+        Column name for monetary amounts.
+    date_cols : list[str]
+        Date column names (without _int suffix).
+    ref_col : str or None
+        Reference column for exact-match pair feature.
+    augment : bool
+        Whether to apply augmentation to query rows. Default False.
+        Should be True for training, False for validation/test.
+    augment_params : dict or None
+        Configuration dict passed as **kwargs to augment_query().
+        Keys are the enable_* flags and tuning parameters.
+        Example: {"enable_token_dropout": True, "token_drop_prob": 0.15}
+    columns_to_normalize : list[str] or None
+        Text columns used for combined_text (required for field_omission).
+    """
+
+    def __init__(
+        self,
+        episodes,
+        vectorizer,
+        amount_col,
+        date_cols,
+        ref_col=None,
+        augment: bool = False,
+        augment_params: dict = None,
+        columns_to_normalize: list = None,
+    ):
         self.episodes = episodes
         self.vectorizer = vectorizer
         self.amount_col = amount_col
         self.date_cols = date_cols
         self.ref_col = ref_col
+        self.augment = augment
+        self.augment_params = augment_params or {}
+        self.columns_to_normalize = columns_to_normalize or []
+        # Pre-compute date_int column names for scalar augmentation
+        self._date_int_cols = [f"{c}_int" for c in date_cols]
+        # Each Dataset instance gets its own RNG (no seed → different
+        # noise every time __getitem__ is called)
+        self._rng = np.random.default_rng(seed=None)
 
     def __len__(self):
         return len(self.episodes)
@@ -68,6 +117,19 @@ class RankingEpisodeDataset(Dataset):
         ep = self.episodes[idx]
         query_row = ep["query_row"]
         candidates_df = ep["candidates_df"]
+
+        # ── Apply augmentation to query BEFORE vectorization ────────
+        # This ensures TF-IDF and scalar features reflect the noise.
+        # Candidates are NEVER augmented — only the query side.
+        if self.augment:
+            query_row = augment_query(
+                query_row,
+                columns_to_normalize=self.columns_to_normalize,
+                amount_col=self.amount_col,
+                date_int_cols=self._date_int_cols,
+                rng=self._rng,
+                **self.augment_params,
+            )
 
         vec_q, scal_q, vec_C, scal_C, pair_C, pos_ix = vectorize_episode(
             query_row, candidates_df,

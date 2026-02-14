@@ -20,6 +20,16 @@ from .vectorization import (
     iter_episode_text,
     vectorize_episode,
 )
+from .augmentation import (
+    augment_query,
+    token_dropout,
+    token_swap,
+    char_noise,
+    synonym_substitution,
+    field_omission,
+    scalar_perturbation,
+    DEFAULT_SYNONYMS,
+)
 
 __all__ = [
     # data_prep
@@ -37,4 +47,13 @@ __all__ = [
     # vectorization
     "iter_episode_text",
     "vectorize_episode",
+    # augmentation
+    "augment_query",
+    "token_dropout",
+    "token_swap",
+    "char_noise",
+    "synonym_substitution",
+    "field_omission",
+    "scalar_perturbation",
+    "DEFAULT_SYNONYMS",
 ]
